@@ -1,0 +1,6 @@
+{
+  "name": "AuraLink",
+  "description": "AI-Powered PC Screen Monitor and Remote File Explorer",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
