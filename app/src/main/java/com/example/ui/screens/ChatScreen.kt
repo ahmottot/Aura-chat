@@ -70,9 +70,7 @@ fun ChatScreen(
     // Scroll to bottom when list changes
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) {
-            scope.launch {
-                listState.animateScrollToItem(messages.size - 1)
-            }
+            listState.animateScrollToItem(messages.size - 1)
         }
     }
 

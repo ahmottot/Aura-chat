@@ -64,32 +64,45 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun startAutoConnectListener() {
         viewModelScope.launch(Dispatchers.IO) {
-            var serverSocket: java.net.ServerSocket? = null
-            try {
-                serverSocket = java.net.ServerSocket(5556)
-                while (true) {
-                    val socket = serverSocket.accept()
-                    val reader = socket.getInputStream().bufferedReader()
-                    val line = reader.readLine()
-                    if (line != null && line.startsWith("AURALINK_ONLINE")) {
-                        val parts = line.split("|")
-                        if (parts.size >= 4) {
-                            val ip = parts[1]
-                            val port = parts[2].toIntOrNull() ?: 5555
-                            val pin = parts[3]
-                            withContext(Dispatchers.Main) {
-                                performAutoConnect(ip, port, pin)
+            while (true) {
+                var serverSocket: java.net.ServerSocket? = null
+                try {
+                    serverSocket = java.net.ServerSocket().apply {
+                        reuseAddress = true
+                        bind(java.net.InetSocketAddress(5556))
+                    }
+                    while (true) {
+                        val socket = serverSocket.accept()
+                        socket.use { s ->
+                            val reader = s.getInputStream().bufferedReader()
+                            val line = reader.readLine()
+                            if (line != null && line.startsWith("AURALINK_ONLINE")) {
+                                val parts = line.split("|")
+                                if (parts.size >= 4) {
+                                    val ip = parts[1]
+                                    val port = parts[2].toIntOrNull() ?: 5555
+                                    val pin = parts[3]
+                                    withContext(Dispatchers.Main) {
+                                        performAutoConnect(ip, port, pin)
+                                    }
+                                }
                             }
                         }
                     }
-                    socket.close()
+                } catch (e: Exception) {
+                    if (e is kotlinx.coroutines.CancellationException) {
+                        throw e
+                    }
+                } finally {
+                    try { serverSocket?.close() } catch (ex: Exception) {}
                 }
-            } catch (e: Exception) {
-                // background listener error/restarting after a short delay
-                delay(5000)
-                startAutoConnectListener()
-            } finally {
-                try { serverSocket?.close() } catch (ex: Exception) {}
+                
+                // Wait 5 seconds before trying again to bind or listen
+                try {
+                    delay(5000)
+                } catch (ce: kotlinx.coroutines.CancellationException) {
+                    throw ce
+                }
             }
         }
     }
@@ -111,11 +124,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 repository.connectDevice(updatedDevice)
                 _isDeviceOnline.value = true
 
-                android.widget.Toast.makeText(
-                    getApplication(),
-                    "AuraLink: Bilgisayarınız (${updatedDevice.name}) otomatik olarak bağlandı!",
-                    android.widget.Toast.LENGTH_LONG
-                ).show()
+                withContext(Dispatchers.Main) {
+                    android.widget.Toast.makeText(
+                        getApplication(),
+                        "AuraLink: Bilgisayarınız (${updatedDevice.name}) otomatik olarak bağlandı!",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                }
                 _autoConnectEvent.value = "AuraLink: ${updatedDevice.name} bilgisayarınız açıldı ve otomatik bağlandı!"
             } else {
                 val existingDevice = devices.firstOrNull()
@@ -130,11 +145,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     repository.connectDevice(updatedDevice)
                     _isDeviceOnline.value = true
 
-                    android.widget.Toast.makeText(
-                        getApplication(),
-                        "AuraLink: Bilgisayarınız otomatik bağlandı!",
-                        android.widget.Toast.LENGTH_LONG
-                    ).show()
+                    withContext(Dispatchers.Main) {
+                        android.widget.Toast.makeText(
+                            getApplication(),
+                            "AuraLink: Bilgisayarınız otomatik bağlandı!",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                    }
                     _autoConnectEvent.value = "AuraLink: Bilgisayarınız açıldı ve otomatik bağlandı!"
                 }
             }

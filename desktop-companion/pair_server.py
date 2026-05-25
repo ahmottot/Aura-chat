@@ -20,6 +20,61 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from threading import Thread
 import time
 import webbrowser
+import builtins
+
+# Force Windows console/terminal to use UTF-8 and enable standard output stream configuration
+if platform.system() == "Windows":
+    try:
+        os.system("chcp 65001 >nul")
+    except Exception:
+        pass
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+# Global print override to completely eliminate "?" rendering on Windows command prompt
+_original_print = builtins.print
+
+def safe_print(*args, **kwargs):
+    sep = kwargs.get("sep", " ")
+    joint_txt = sep.join(str(arg) for arg in args)
+    
+    # Check if we are running in an environment that cannot paint emojis (like standard Windows command prompt)
+    if platform.system() == "Windows":
+        emoji_map = {
+            "🤖": "[AuraLink AI]",
+            "⚡": "[FastLink]",
+            "🚀": "[START]",
+            "🔔": "[BİLDİRİM]",
+            "⚠️": "[UYARI]",
+            "⭐": "[*]",
+            "📥": "[İNDİR]",
+            "⚙️": "[SİSTEM]",
+            "🖥️": "[PC]",
+            "🌐": "[WEB]",
+            "📍": "[KONUM]",
+            "📦": "[PAKET]"
+        }
+        for emoji, alt in emoji_map.items():
+            joint_txt = joint_txt.replace(emoji, alt)
+            
+    try:
+        encoding = getattr(sys.stdout, "encoding", "utf-8") or "utf-8"
+        encoded = joint_txt.encode(encoding, errors="replace")
+        joint_txt = encoded.decode(encoding)
+    except Exception:
+        pass
+        
+    kwargs_cleaned = kwargs.copy()
+    if "sep" in kwargs_cleaned:
+        del kwargs_cleaned["sep"]
+    _original_print(joint_txt, **kwargs_cleaned)
+
+builtins.print = safe_print
 
 # Try importing Pillow for screenshots. If fail, fall back to a placeholder.
 try:
@@ -29,8 +84,26 @@ except ImportError:
     PILLOW_AVAILABLE = False
 
 
-# Generate a random 6-digit security PIN for this session
-SECURITY_PIN = str(random.randint(100000, 999999))
+# Load or generate persistent 6-digit security PIN to prevent 401 authentication errors on restarts
+CONFIG_FILE = "pair_server_config.json"
+SECURITY_PIN = None
+
+try:
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+            SECURITY_PIN = cfg.get("security_pin")
+except Exception:
+    pass
+
+if not SECURITY_PIN:
+    SECURITY_PIN = str(random.randint(100000, 999999))
+    try:
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump({"security_pin": SECURITY_PIN}, f)
+    except Exception:
+        pass
+
 PORT = 5555
 PAIRED_DEVICES_FILE = "paired_devices.json"
 
@@ -39,11 +112,26 @@ def show_desktop_notification(title, msg):
     print(f"\n [🔔 BİLDİRİM] {title}: {msg}\n")
     system_os = platform.system()
     try:
+        # Strip all graphics that can display as '?' inside native OS notifications
+        clean_title = title
+        clean_msg = msg
+        for gemoji in ["🤖", "⚡", "🚀", "🔔", "⚠️", "⭐", "📥", "⚙️", "🖥️", "🌐", "📍", "📦"]:
+            clean_title = clean_title.replace(gemoji, "")
+            clean_msg = clean_msg.replace(gemoji, "")
+            
+        clean_title = clean_title.strip()
+        clean_msg = clean_msg.strip()
+
         if system_os == "Windows":
-            cmd = f'powershell -NoProfile -Command "[Reflection.Assembly]::LoadWithPartialName(\'System.Windows.Forms\') | Out-Null; [System.Windows.Forms.MessageBox]::Show(\'{msg}\', \'{title}\', 0, 64)"'
+            # Sanitize single quotes and double quotes for PowerShell Command safely
+            safe_title = clean_title.replace("'", "''").replace('"', '`"')
+            safe_msg = clean_msg.replace("'", "''").replace('"', '`"')
+            cmd = f'powershell -NoProfile -Command "[Reflection.Assembly]::LoadWithPartialName(\'System.Windows.Forms\') | Out-Null; [System.Windows.Forms.MessageBox]::Show(\'{safe_msg}\', \'{safe_title}\', 0, 64)"'
             subprocess.Popen(cmd, shell=True)
         elif system_os == "Linux":
-            cmd = f'notify-send "{title}" "{msg}" --icon=info'
+            safe_title = clean_title.replace('"', '\\"')
+            safe_msg = clean_msg.replace('"', '\\"')
+            cmd = f'notify-send "{safe_title}" "{safe_msg}" --icon=info'
             subprocess.Popen(cmd, shell=True)
     except Exception as e:
         print(f" [⚠️] Native bildirim hatası: {e}")
@@ -408,7 +496,7 @@ def run_gui_automation(action_type, site_url, details, result_msg=""):
         except Exception:
             pass
 
-        title_lbl = tk.Label(root, text="🤖 AuraLink Akıllı Yapay Zeka Komutu", fg="#00fcfc", bg="#0b0e14", font=("Arial", 12, "bold"))
+        title_lbl = tk.Label(root, text=">>> AuraLink Akıllı Yapay Zeka Komutu <<<", fg="#00fcfc", bg="#0b0e14", font=("Arial", 12, "bold"))
         title_lbl.pack(pady=10)
 
         details_lbl = tk.Label(root, text=f"Tür: {action_type}\nParametre: {site_url or details}", fg="#adb5bd", bg="#0b0e14", font=("Arial", 9))
@@ -657,6 +745,81 @@ def execute_system_action(action_type, site_url, details):
             except Exception as e:
                 return "error", f"Tarayıcı hatası: {str(e)}"
         return "error", "Lütfen açılacak web adresini belirtin."
+
+    # Map 'google_search' or search_web
+    elif action_type in ["google_search", "search_web"]:
+        query = details or site_url
+        if query:
+            url = f"https://www.google.com/search?q={urllib.parse.quote(query)}"
+            try:
+                webbrowser.open_new_tab(url)
+                return "success", f"Tarayıcıda Google araması açıldı: {query}"
+            except Exception as e:
+                return "error", f"Tarayıcıda Google araması başlatılamadı: {str(e)}"
+        return "error", "Lütfen arama kelimesini belirtin."
+
+    # Map 'download_url' or download_file
+    elif action_type in ["download_url", "download_file"]:
+        url = site_url if site_url else details
+        if url:
+            if not url.startswith("http://") and not url.startswith("https://"):
+                url = "https://" + url
+            try:
+                if system_os == "Windows":
+                    download_dir = os.path.join(os.environ.get("USERPROFILE", "C:\\"), "Downloads")
+                else:
+                    download_dir = os.path.expanduser("~/Downloads")
+                
+                if not os.path.exists(download_dir):
+                    download_dir = os.path.expanduser("~")
+                
+                parsed_url = urllib.parse.urlparse(url)
+                filename = os.path.basename(parsed_url.path)
+                if not filename or "." not in filename:
+                    filename = f"downloaded_file_{int(time.time())}.bin"
+                
+                output_path = os.path.join(download_dir, filename)
+                
+                import urllib.request
+                print(f" [📥] Dosya yükleniyor: {url} -> {output_path}")
+                urllib.request.urlretrieve(url, output_path)
+                return "success", f"Dosya başarıyla yüklendi ve Downloads klasörüne kaydedildi:\n📍 Yol: {output_path}\n📦 İsim: {filename}"
+            except Exception as e:
+                return "error", f"Dosya indirme hatası: {str(e)}"
+        return "error", "Geçersiz indirme bağlantısı (URL)."
+
+    # Map 'python_script' dynamic automation runner to unlock infinite capabilities
+    elif action_type in ["python_script", "script_automation"]:
+        code = details or site_url
+        if code:
+            try:
+                temp_filename = f"aura_temp_script_{int(time.time())}.py"
+                with open(temp_filename, "w", encoding="utf-8") as temp_file:
+                    temp_file.write(code)
+                
+                res = subprocess.run([sys.executable, temp_filename], capture_output=True, text=True, timeout=12.0)
+                output = res.stdout if res.stdout else ""
+                err = res.stderr if res.stderr else ""
+                joined_outputs = (output + "\n" + err).strip()
+                
+                try:
+                    os.remove(temp_filename)
+                except Exception:
+                    pass
+                
+                if res.returncode == 0:
+                    return "success", f"Dinamik Python betiği başarıyla çalıştırıldı (Çıkış kodu: 0).\n\n📝 ÇIKTI:\n{joined_outputs[:1000]}"
+                else:
+                    return "error", f"Dinamik Python betiği hata koduyla sonlandı ({res.returncode}).\n\n📝 HATA YAZISI:\n{joined_outputs[:1000]}"
+            except subprocess.TimeoutExpired:
+                try:
+                    os.remove(temp_filename)
+                except Exception:
+                    pass
+                return "success", "Dinamik betik arka planda çalışmaya devam ediyor (Süre aşımı)."
+            except Exception as e:
+                return "error", f"Dinamik Python betiği çalıştırılamadı: {str(e)}"
+        return "error", "Çalıştırılacak Python kodu boş."
 
     # Map 'google_search' or search_web
     elif action_type in ["google_search", "search_web"]:
