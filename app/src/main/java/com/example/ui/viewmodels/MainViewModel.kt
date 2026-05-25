@@ -110,17 +110,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun performAutoConnect(ip: String, port: Int, pin: String) {
         viewModelScope.launch {
             val devices = pairedDevices.value
+            if (devices.isEmpty()) return@launch
+
+            // Try to match the device dynamically:
+            // 1) Match by exact PIN
+            // 2) Match by exact IP Address
+            // 3) Fallback: If only 1 device is saved in the app, it belongs to the user's computer.
             val matchedDevice = devices.firstOrNull { it.pinCode == pin }
-                ?: devices.firstOrNull { it.ipAddress == ip && it.pinCode == pin }
+                ?: devices.firstOrNull { it.ipAddress == ip }
+                ?: if (devices.size == 1) devices.first() else null
 
             if (matchedDevice != null) {
-                // If we are already connected to this device and it is online, do not re-trigger alerts
                 val current = currentDevice.value
-                if (current != null && current.id == matchedDevice.id && _isDeviceOnline.value) {
+                // If we are already connected and all parameters match, do not spam toasts
+                if (current != null &&
+                    current.id == matchedDevice.id &&
+                    current.ipAddress == ip &&
+                    current.port == port &&
+                    current.pinCode == pin &&
+                    _isDeviceOnline.value) {
                     return@launch
                 }
 
-                val updatedDevice = matchedDevice.copy(ipAddress = ip, port = port)
+                // Create updated device instance syncing IP, Port and fresh PIN completely
+                val updatedDevice = matchedDevice.copy(ipAddress = ip, port = port, pinCode = pin)
                 repository.connectDevice(updatedDevice)
                 _isDeviceOnline.value = true
 
@@ -132,28 +145,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     ).show()
                 }
                 _autoConnectEvent.value = "AuraLink: ${updatedDevice.name} bilgisayarınız açıldı ve otomatik bağlandı!"
-            } else {
-                val existingDevice = devices.firstOrNull()
-                if (existingDevice != null && existingDevice.pinCode == pin) {
-                    // Ignore if already connected and online
-                    val current = currentDevice.value
-                    if (current != null && current.id == existingDevice.id && _isDeviceOnline.value) {
-                        return@launch
-                    }
-
-                    val updatedDevice = existingDevice.copy(ipAddress = ip, port = port)
-                    repository.connectDevice(updatedDevice)
-                    _isDeviceOnline.value = true
-
-                    withContext(Dispatchers.Main) {
-                        android.widget.Toast.makeText(
-                            getApplication(),
-                            "AuraLink: Bilgisayarınız otomatik bağlandı!",
-                            android.widget.Toast.LENGTH_LONG
-                        ).show()
-                    }
-                    _autoConnectEvent.value = "AuraLink: Bilgisayarınız açıldı ve otomatik bağlandı!"
-                }
             }
         }
     }

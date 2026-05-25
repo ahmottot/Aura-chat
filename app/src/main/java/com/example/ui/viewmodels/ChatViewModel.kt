@@ -216,9 +216,24 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             generationConfig = GenerationConfig(temperature = 0.4f)
         )
 
-        // Generate response using Retrofit Direct Client
-        val response = withContext(Dispatchers.IO) {
-            GeminiRetrofitClient.service.generateContent("gemini-3.5-flash", apiKey, request)
+        // Use a robust fallback mechanism for Gemini models to prevent any 401/404/400 errors from un-released local/pre-release models
+        val modelCandidates = listOf("gemini-1.5-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-3.5-flash")
+        var response: GeminiResponse? = null
+        var lastException: Exception? = null
+
+        for (modelName in modelCandidates) {
+            try {
+                response = withContext(Dispatchers.IO) {
+                    GeminiRetrofitClient.service.generateContent(modelName, apiKey, request)
+                }
+                if (response != null) break
+            } catch (e: Exception) {
+                lastException = e
+            }
+        }
+
+        if (response == null) {
+            throw lastException ?: Exception("Hiçbir model yanıt vermedi. Lütfen API anahtarınızın geçerli olduğunu doğrulayınız.")
         }
 
         val candidate = response.candidates?.firstOrNull()
