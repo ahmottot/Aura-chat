@@ -133,14 +133,33 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     ),
                     FunctionDeclaration(
                         name = "execute_pc_action",
-                        description = "PC üzerinde otomatik bir işlem (site açma, üye girişi, satın alma simülasyonu, vb.) başlatır.",
+                        description = "PC üzerinde gelişmiş sistem ve otomasyon işlerini (terminal komut çalıştırma, otomatik web arama, URL'den dosya/program indirme, dinamik Python betiği yürütme, ses ayarları, medya kumandası, klavyeden yazı yazma, uygulama açma, vb.) yürütür.",
                         parameters = FunctionParameters(
                             properties = mapOf(
-                                "action_type" to PropertyDescription("STRING", "İşlem türü. Örn: 'open_browser', 'purchase_simulation', 'login_automation'"),
-                                "site_url" to PropertyDescription("STRING", "İşlemin yapılacağı hedef web sitesi url'i."),
-                                "details" to PropertyDescription("STRING", "Kullanıcının talimatının ayrıntıları (sipariş verilecek ürün, girilecek mail/şifre vb.).")
+                                "action_type" to PropertyDescription("STRING", "İşlem türü seçimi. Şu değerlerden birisi veya daha fazlası olmalıdır:\n" +
+                                        "- 'command': Terminal / Shell Komut satırı (CMD/PowerShell veya Linux Bash) çalıştırma.\n" +
+                                        "- 'google_search': Varsayılan tarayıcıda doğrudan Google araması yapar.\n" +
+                                        "- 'download_url': Herhangi bir HTTP/HTTPS linkinden (URL) PC'ye doğrudan dosya indirir.\n" +
+                                        "- 'python_script': Dinamik Python kodu çalıştırır (Kullanıcının sınırı olmayan karmaşık her türlü otomasyonu, otomatik satın alma, hesap giriş, tıklama, yükleme vb. işleri için Python kodu yazar ve çalıştırır).\n" +
+                                        "- 'volume': Bilgisayarın ses düzeyini açma, kısma ve sessiz modu.\n" +
+                                        "- 'media': Medya şarkı oynatma, durdurma, sonraki, önceki kumandası.\n" +
+                                        "- 'power': Bilgisayar gücü kontrolü (kapat, yeniden başlat, kilitle, uyku).\n" +
+                                        "- 'keyboard': Bilgisayar ekranında klavye harflerini tipleyerek yazma.\n" +
+                                        "- 'open_app': Masaüstü uygulaması çalıştırma.\n" +
+                                        "- 'open_browser': Web tarayıcısında adres (URL) açma."),
+                                "site_url" to PropertyDescription("STRING", "Açılacak veya işlem yapılacak hedef web sitesi url adresi (örn: https://google.com) ya da indirme linki."),
+                                "details" to PropertyDescription("STRING", "Komut yürütme ayrıntısı:\n" +
+                                        "- 'python_script' ise: PC'de python ile arka planda çalıştırılacak tam ve kendi kendine yeten python kodu (örn: urllib kullanarak webden dosya çekme, selenium/json işlemleri vb.).\n" +
+                                        "- 'google_search' ise: Google'da aranacak kelimeler.\n" +
+                                        "- 'command' ise: Çalıştırılacak terminal komutu (örn: 'dir', 'ping 8.8.8.8', 'ipconfig', 'ls', 'systeminfo' vb.).\n" +
+                                        "- 'volume' ise: 'up' (ses aç), 'down' (ses kıs), 'mute' (ses kapat/aç).\n" +
+                                        "- 'media' ise: 'play' (oynat/duraklat), 'next' (sonraki), 'prev' (önceki).\n" +
+                                        "- 'power' ise: 'lock' (ekran kilitle), 'sleep' (uyku), 'shutdown' (kapat), 'restart' (yeniden başlat).\n" +
+                                        "- 'keyboard' veya 'type' ise: Ekrana yazdırılacak kelimeler veya harfler.\n" +
+                                        "- 'open_app' ise: Açılacak uygulama dosyası/adı (örn: 'notepad', 'calc', 'chrome', 'steam').\n" +
+                                        "- 'open_browser' ise: Yapılacak işlemin adı veya ek teferruat.")
                             ),
-                            required = listOf("action_type", "site_url", "details")
+                            required = listOf("action_type")
                         )
                     )
                 )
@@ -148,17 +167,29 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         )
 
         val systemPrompt = """
-            Sen 'Aura Link' akıllı PC asistanısın. Kullanıcı Android telefonundan seninle yazışıyor ve bilgisayarına bağlanmış durumda.
-            Bilgisayar işletim sistemi hem Windows hem Pardus (Debian Linux) uyumludur.
-            Kullanıcı sana bilgisayarla ilgili komutlar verdiğinde uygun fonksiyonları/araçları çağırarak bu işlemleri gerçekleştirebilirsin.
-            Seçenekler:
-            1. 'get_screenshot': Ekran fotosu istendiğinde, steam indirmesi sorulduğunda veya pc ekranını görmek istediğinde çağır.
-            2. 'get_system_info': PC performansı, cpu/ram kullanımı, bilgisayarın açık olup olmaması veya aktif programlar sorulduğunda çağır.
-            3. 'search_files': Belirli bir dosya ismi, içerik veya PC üzerinde dosya arayışı yapıldığında çağır.
-            4. 'execute_pc_action': Kullanıcı "bana yemek sipariş et", "şuradan yumurta al", "şu siteye git", "şununla giriş yap" dediğinde çağır. Gerekli site url'ini, hesap bilgilerini veya ürün detaylarını parametre olarak ver.
+            Sen 'Aura Link' akıllı PC asistanısın. Kullanıcı Android telefonundan seninle yazışıyor ve bilgisayarına sorunsuz bağlanmış durumda.
+            Bilgisayar işletim sistemi hem Windows hem Pardus (Debian Linux) sistemleri ile %100 uyumludur.
+            Kullanıcı sana bilgisayarla ilgili HER TÜRLÜ SINIRSIZ isteği verebilir: google araması, siteden ürün bulup satın alma simülasyonu, bir siteye girip hesap açma, google'da aranan en uygun şeyi bulup PC'ye indirme/yükleme, müzik kontrolü, klavye-mouse simülasyonu vb. Sen bu istekleri yerine getirmek için uygun fonksiyonları ve araçları tam yetkiyle çalıştırırsın.
             
-            Kullanıcı Türkçe konuşacaktır. Son derece açıklayıcı, yardımsever ve teknolojik bir dilde yanıt ver.
-            Ekran görüntüsü çekilirse veya bir otomasyon başlatılırsa, kullanıcıyı sevinçle karşıla ve durumu anlat. Örneğin otomasyonu başlattığında: "Otomasyon işlemini bilgisayarınızda başlattım! Süreci Durum sayfasındaki 'Ekranı Canlı İzle' seçeneğinden izleyebilirsiniz" de.
+            Yeteneklerin ve Seçeneklerin:
+            1. 'get_screenshot': Ekran fotosu istendiğinde, PC ekranını görmek istediğinde veya aktif işleri kontrol ederken çağır.
+            2. 'get_system_info': PC performansı, cpu/ram kullanımı, bilgisayarın açık durumu veya aktif açık olan pencere sorulduğunda çağır.
+            3. 'search_files': Belirli bir dosya ismi, içerik veya PC üzerinde dosya arayışı yapıldığında çağır.
+            4. 'execute_pc_action': PC'deki diğer tüm işler için en yetkin ve esnek kontrol panelindir:
+               - Kullanıcı Google araması yapmak istediğinde -> action_type = 'google_search', details = 'aranacak kelimeler'
+               - Kullanıcı webden doğrudan dosya, müzik, program ve resim indirmek/yüklemek istediğinde -> action_type = 'download_url', site_url = 'dosya indirme linki'
+               - Kullanıcı "hesabıma giriş yap", "ürünü bul satın al", "şuradan şunu otomatik yükle/otomatik bul" gibi kompleks, özel, aşamalı otomasyonlar istediğinde -> action_type = 'python_script', details = 'Betik Kodu (Kompleks işlemleri web istekleri veya python otomasyon kütüphaneleriyle yapacak temiz, çalışan bir python kodu yazarsın)'
+               - Kullanıcı terminal/CMD/komut çalıştırmak istediğinde -> action_type = 'command', details = 'komut içeriği'
+               - Kullanıcı ses seviyesini değiştirmek istediğinde -> action_type = 'volume', details = 'up' / 'down' / 'mute'
+               - Kullanıcı müzik/medya değiştirmek istediğinde -> action_type = 'media', details = 'play' / 'next' / 'prev'
+               - Kullanıcı gücü değiştirmek istediğinde (bilgisayarı kapat, kilitle, uykuya al vb.) -> action_type = 'power', details = 'lock' / 'sleep' / 'shutdown' / 'restart'
+               - Kullanıcı ekrana klavyeyle yazı yazdırmak istediğinde -> action_type = 'keyboard', details = 'yazılacak metin'
+               - Kullanıcı uygulama açmak istediğinde -> action_type = 'open_app', details = 'uygulama adı (notepad, calc, chrome, vb.)'
+               - Kullanıcı web sitesi açmak istediğinde -> action_type = 'open_browser', site_url = 'site linki'
+
+            Kullanıcı son derece özgürce isteklerde bulunacaktır. Sınır yoktur! Sen bu istekleri doğrudan 'execute_pc_action' ile yerine getirirsin.
+            Eğer kullanıcı karmaşık bir siteye giriş yapmak, ürün listesini otomatik buldurmak, belirli bir hesabı satın alıp indirtmek gibi şeyler isterse, bunu çözmek için 'python_script' eylemi içerisinde çalışan dinamik PYTHON kodları yazar ve gönderirsin. Kodlar standart kütüphaneleri (urllib, subprocess, os, sys vb.) kullanmalı veya gerekirse 'pip install' komutlarını terminalden tetikleyebileceğini bilmelidir.
+            Bilgisayardan aldığın sonuçları (örneğin komut çıktısını) son derece açıklayıcı, yardımsever, havalı ve teknolojik bir dilde kullanıcıya özetle. Yanıtlarında Türkçe dil kurallarına uy ve samimi ama profesyonel bir asistan dili kullan.
         """.trimIndent()
 
         // 1. Compile chat history to feed into Gemini API
@@ -224,12 +255,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        val baseUrl = "http://${device.ipAddress}:${device.port}"
-
         when (call.name) {
             "get_screenshot" -> {
                 repository.addMessage(ChatMessage(sender = "SYSTEM", content = "Ekran görüntüsü talep ediliyor..."))
-                val url = "$baseUrl/screenshot"
+                val url = device.buildUrl("/screenshot")
                 try {
                     // Fetch screenshot as binary ResponseBody
                     val responseBody = withContext(Dispatchers.IO) {
@@ -272,7 +301,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
             "get_system_info" -> {
                 repository.addMessage(ChatMessage(sender = "SYSTEM", content = "Performans bilgileri okunuyor..."))
-                val url = "$baseUrl/info"
+                val url = device.buildUrl("/info")
                 try {
                     val info = withContext(Dispatchers.IO) {
                         CompanionClient.service.getSystemInfo(url, device.pinCode)
@@ -300,7 +329,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             "search_files" -> {
                 val query = call.args?.get("query") ?: ""
                 repository.addMessage(ChatMessage(sender = "SYSTEM", content = "'$query' dosyası bilgisayarda aranıyor..."))
-                val url = "$baseUrl/search"
+                val url = device.buildUrl("/search")
                 try {
                     val response = withContext(Dispatchers.IO) {
                         CompanionClient.service.searchFiles(url, query, device.pinCode)
@@ -341,27 +370,30 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 val siteUrl = call.args?.get("site_url") ?: ""
                 val details = call.args?.get("details") ?: ""
 
-                repository.addMessage(ChatMessage(sender = "SYSTEM", content = "Otomasyon görevi bilgisayara gönderiliyor..."))
-                val url = "$baseUrl/execute"
+                repository.addMessage(ChatMessage(sender = "SYSTEM", content = "Komut bilgisayara gönderiliyor..."))
+                val url = device.buildUrl("/execute")
                 try {
                     val response = withContext(Dispatchers.IO) {
                         CompanionClient.service.executeAction(url, actionType, siteUrl, details, device.pinCode)
                     }
                     if (response.status == "success") {
+                        val replyText = response.message ?: "İşlem başarıyla tamamlandı!"
                         repository.addMessage(
                             ChatMessage(
                                 sender = "AI",
-                                content = "Otomasyon bilgisayarınızda başlatıldı!\n💻 **İşlem**: $actionType\n🌐 **Site**: $siteUrl\n📝 **Detaylar**: $details\n\nSüreci anlık takip etmek için Durum sayfasından 'Ekranı Canlı İzle' tuşuna basabilirsiniz!"
+                                content = "Bilgisayarda komut başarıyla gerçekleştirildi!\n" +
+                                        "💻 **İşlem**: $actionType \n" +
+                                        "🖥️ **Bilgisayar Yanıtı**:\n$replyText"
                             )
                         )
                     } else {
-                        repository.addMessage(ChatMessage(sender = "AI", content = "Otomasyon bilgisayar tarafından reddedildi: ${response.message}"))
+                        repository.addMessage(ChatMessage(sender = "AI", content = "İşlem bilgisayar tarafından reddedildi: ${response.message}"))
                     }
                 } catch (e: Exception) {
                     repository.addMessage(
                         ChatMessage(
                             sender = "SYSTEM",
-                            content = "Otomasyon gönderilemedi: ${e.localizedMessage ?: "Bağlantı hatası. Masaüstü sunucusu açık mı?"}"
+                            content = "İşlem gönderilemedi: ${e.localizedMessage ?: "Bağlantı hatası. Masaüstü sunucusu açık mı?"}"
                         )
                     )
                 }
@@ -379,7 +411,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun downloadFileToPhone(device: PairedDevice, pcFilePath: String, fileName: String, onComplete: (String) -> Unit) {
         viewModelScope.launch {
             repository.addMessage(ChatMessage(sender = "SYSTEM", content = "'$fileName' indiriliyor..."))
-            val url = "http://${device.ipAddress}:${device.port}/download"
+            val url = device.buildUrl("/download")
             try {
                 val responseBody = withContext(Dispatchers.IO) {
                     CompanionClient.service.downloadFile(url, pcFilePath, device.pinCode)

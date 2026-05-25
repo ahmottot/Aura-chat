@@ -19,6 +19,7 @@ import kotlinx.coroutines.withContext
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val repository: DeviceRepository
+    private var healthCheckFailCount = 0
 
     val pairedDevices: StateFlow<List<PairedDevice>>
     val currentDevice: StateFlow<PairedDevice?>
@@ -148,16 +149,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val device = repository.getCurrentDevice()
         if (device == null) {
             _isDeviceOnline.value = false
+            healthCheckFailCount = 0
             return
         }
-        val url = "http://${device.ipAddress}:${device.port}/info"
+        val url = device.buildUrl("/info")
         try {
             withContext(Dispatchers.IO) {
                 val response = CompanionClient.service.getSystemInfo(url, device.pinCode)
-                _isDeviceOnline.value = response.status == "success"
+                if (response.status == "success") {
+                    _isDeviceOnline.value = true
+                    healthCheckFailCount = 0
+                } else {
+                    healthCheckFailCount++
+                    if (healthCheckFailCount >= 2) {
+                        _isDeviceOnline.value = false
+                    }
+                }
             }
         } catch (e: Exception) {
-            _isDeviceOnline.value = false
+            healthCheckFailCount++
+            if (healthCheckFailCount >= 2) {
+                _isDeviceOnline.value = false
+            }
         }
     }
 
@@ -166,7 +179,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _pairingState.value = PairingState.Loading
 
         viewModelScope.launch {
-            val url = "http://$ip:$port/pair"
+            val dummyDevice = PairedDevice(name = "", ipAddress = ip, port = port, pinCode = pin)
+            val url = dummyDevice.buildUrl("/pair")
             try {
                 val response = withContext(Dispatchers.IO) {
                     CompanionClient.service.pairHost(url, pin)

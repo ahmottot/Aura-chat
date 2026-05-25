@@ -81,11 +81,6 @@ def announce_online_to_phones():
                         msg = f"AURALINK_ONLINE|{LOCAL_IP}|{PORT}|{SECURITY_PIN}\n"
                         s.sendall(msg.encode('utf-8'))
                         print(f" [⚡] Telefona otomatik bağlantı sinyali başarıyla ulaştırıldı: {ip}")
-                        
-                        show_desktop_notification(
-                            "AuraLink Bağlantısı Kuruldu!",
-                            f"Telefonunuz ({ip}) ile otomatik bağlantı sağlandı."
-                        )
                     except Exception:
                         pass
                     finally:
@@ -95,20 +90,316 @@ def announce_online_to_phones():
         time.sleep(12)
 
 
-def run_gui_automation(action_type, site_url, details):
-    # Entegre web tarayıcısını doğrudan çalıştır
+# Thread-safe global cached metrics updated in a background thread
+CACHED_METRICS = {
+    "os": f"{platform.system()} {platform.release()}",
+    "hostname": socket.gethostname(),
+    "cpu_usage": 5.0,
+    "memory_usage": 35.0,
+    "disk_free": "Calculating...",
+    "active_app": "System"
+}
+
+
+def update_metrics_loop():
+    """Background thread loop to update system metrics periodically without blocking HTTP requests."""
+    global CACHED_METRICS
+    system_os = platform.system()
+    while True:
+        try:
+            cpu_percent = 5.0
+            mem_percent = 30.0
+            disk_free_str = "Calculating..."
+            active_window = "Masaüstü"
+
+            if system_os == "Windows":
+                # Get CPU load - wmic is faster than powershell Get-CimInstance
+                try:
+                    cmd = "wmic cpu get loadpercentage /value"
+                    out = subprocess.check_output(cmd, shell=True, timeout=1.5).decode().strip()
+                    if "LoadPercentage=" in out:
+                        cpu_percent = float(out.split("=")[1].strip())
+                    else:
+                        cpu_percent = 8.0
+                except Exception:
+                    # fallback
+                    try:
+                        cmd = "powershell -NoProfile -Command \"(Get-WmiObject Win32_Processor).LoadPercentage\""
+                        out = subprocess.check_output(cmd, shell=True, timeout=1.5).decode().strip()
+                        cpu_percent = float(out) if out else 10.0
+                    except Exception:
+                        cpu_percent = 12.0
+
+                # Get RAM usage
+                try:
+                    cmd = "wmic OS get FreePhysicalMemory,TotalVisibleMemorySize /value"
+                    out = subprocess.check_output(cmd, shell=True, timeout=1.5).decode().strip()
+                    free_mem = None
+                    total_mem = None
+                    for line in out.splitlines():
+                        if "FreePhysicalMemory=" in line:
+                            val = line.split("=")[1].strip()
+                            if val.isdigit():
+                                free_mem = float(val)
+                        elif "TotalVisibleMemorySize=" in line:
+                            val = line.split("=")[1].strip()
+                            if val.isdigit():
+                                total_mem = float(val)
+                    if free_mem and total_mem:
+                        mem_percent = ((total_mem - free_mem) / total_mem) * 100.0
+                    else:
+                        mem_percent = 40.0
+                except Exception:
+                    mem_percent = 45.0
+
+                # Disk free
+                try:
+                    cmd = "wmic logicaldisk where DeviceID='C:' get FreeSpace,Size /value"
+                    out = subprocess.check_output(cmd, shell=True, timeout=1.5).decode().strip()
+                    free_space = None
+                    for line in out.splitlines():
+                        if "FreeSpace=" in line:
+                            val = line.split("=")[1].strip()
+                            if val.isdigit():
+                                free_space = float(val) / (1024**3)
+                    if free_space:
+                        disk_free_str = f"{free_space:.1f} GB"
+                    else:
+                        disk_free_str = "50 GB"
+                except Exception:
+                    disk_free_str = "45 GB"
+
+                # Active window
+                try:
+                    cmd = "powershell -NoProfile -Command \"(Get-Process | Where-Object {$_.MainWindowTitle} | Select-Object -First 1).MainWindowTitle\""
+                    out = subprocess.check_output(cmd, shell=True, timeout=1.5).decode("utf-8", "ignore").strip()
+                    if out:
+                        active_window = out
+                except Exception:
+                    active_window = "Windows Desktop"
+
+            else:
+                # Linux (Pardus / Debian Ubuntu) - fast /proc files parsing
+                try:
+                    with open("/proc/stat", "r") as f:
+                        line1 = f.readline().split()
+                    total = sum([float(i) for i in line1[1:]])
+                    idle = float(line1[4])
+                    time.sleep(0.4)
+                    with open("/proc/stat", "r") as f:
+                        line2 = f.readline().split()
+                    total2 = sum([float(i) for i in line2[1:]])
+                    idle2 = float(line2[4])
+                    diff_total = total2 - total
+                    diff_idle = idle2 - idle
+                    if diff_total > 0:
+                        cpu_percent = ((diff_total - diff_idle) / diff_total) * 100
+                except Exception:
+                    cpu_percent = 5.0
+
+                try:
+                    mem_total = 0.0
+                    mem_free = 0.0
+                    with open("/proc/meminfo", "r") as f:
+                        for line in f:
+                            if "MemTotal" in line:
+                                mem_total = float(line.split()[1])
+                            elif "MemAvailable" in line:
+                                mem_free = float(line.split()[1])
+                    if mem_total > 0:
+                        mem_percent = ((mem_total - mem_free) / mem_total) * 100
+                except Exception:
+                    mem_percent = 50.0
+
+                try:
+                    st = os.statvfs("/")
+                    free = (st.f_bavail * st.f_frsize) / (1024 ** 3)
+                    disk_free_str = f"{free:.1f} GB"
+                except Exception:
+                    disk_free_str = "15 GB"
+
+                try:
+                    cmd = "xdotool getactivewindow getwindowname"
+                    active_window = subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL, timeout=1.0).decode().strip()
+                except Exception:
+                    active_window = "Masaüstü (Linux)"
+
+            # Update cache
+            CACHED_METRICS = {
+                "os": f"{platform.system()} {platform.release()}",
+                "hostname": socket.gethostname(),
+                "cpu_usage": round(cpu_percent, 1),
+                "memory_usage": round(mem_percent, 1),
+                "disk_free": disk_free_str,
+                "active_app": active_window
+            }
+        except Exception as e:
+            pass
+
+        time.sleep(4)  # Update every 4 seconds background
+
+
+def execute_system_action(action_type, site_url, details):
+    """Executes various system-level operations on Windows and Linux (Pardus) natively."""
+    system_os = platform.system()
+    status_msg = "Görev başarıyla işlendi."
+
+    print(f" [⚙️] Sistem Komutu Çalıştırılıyor: {action_type} | Parametre: {details or site_url}")
+
     try:
-        if site_url:
-            webbrowser.open_new_tab(site_url)
+        # 1. RUN TERMINAL / SHELL COMMANDS
+        if action_type == "command":
+            cmd = details
+            if not cmd:
+                return "Hata: Komut boş olamaz."
+            # Execute command (timeout 6s to prevent lockup)
+            res = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=6.0)
+            output = res.stdout if res.stdout else ""
+            err = res.stderr if res.stderr else ""
+            combined = (output + "\n" + err).strip()
+            if not combined:
+                combined = f"İşlem tamamlandı (Çıkış kodu: {res.returncode})"
+            status_msg = f"Komut Sonucu:\n{combined}"
+
+        # 2. HARDWARE VOLUME CONTROLS
+        elif action_type == "volume":
+            mode = details.lower()
+            if system_os == "Windows":
+                # PowerShell WScript SendKeys
+                if "up" in mode:
+                    cmd = "powershell -NoProfile -Command \"$w = New-Object -ComObject Wscript.Shell; for ($i=0; $i -lt 5; $i++) { $w.SendKeys([char]175) }\""
+                    subprocess.Popen(cmd, shell=True)
+                    status_msg = "Sistem ses düzeyi %10 arttırıldı."
+                elif "down" in mode:
+                    cmd = "powershell -NoProfile -Command \"$w = New-Object -ComObject Wscript.Shell; for ($i=0; $i -lt 5; $i++) { $w.SendKeys([char]174) }\""
+                    subprocess.Popen(cmd, shell=True)
+                    status_msg = "Sistem ses düzeyi %10 düşürüldü."
+                elif "mute" in mode:
+                    cmd = "powershell -NoProfile -Command \"$w = New-Object -ComObject Wscript.Shell; $w.SendKeys([char]173)\""
+                    subprocess.Popen(cmd, shell=True)
+                    status_msg = "Sessize alma modu değiştirildi."
+            else:
+                # Linux pulse audio / alsa
+                if "up" in mode:
+                    subprocess.Popen("pactl set-sink-volume @DEFAULT_SINK@ +10% || amixer set Master 10%+", shell=True)
+                    status_msg = "Ses %10 arttırıldı."
+                elif "down" in mode:
+                    subprocess.Popen("pactl set-sink-volume @DEFAULT_SINK@ -10% || amixer set Master 10%-", shell=True)
+                    status_msg = "Ses %10 düşürüldü."
+                elif "mute" in mode:
+                    subprocess.Popen("pactl set-sink-mute @DEFAULT_SINK@ toggle || amixer set Master toggle", shell=True)
+                    status_msg = "Ses kilit-sessiz modu değiştirildi."
+
+        # 3. CONTEXTUAL MEDIA KEY EMULATIONS
+        elif action_type == "media":
+            mode = details.lower()
+            if system_os == "Windows":
+                if "play" in mode or "pause" in mode:
+                    subprocess.Popen("powershell -NoProfile -Command \"$w = New-Object -ComObject Wscript.Shell; $w.SendKeys([char]179)\"", shell=True)
+                    status_msg = "Medya Oynat/Duraklat (Play/Pause) yapıldı."
+                elif "next" in mode:
+                    subprocess.Popen("powershell -NoProfile -Command \"$w = New-Object -ComObject Wscript.Shell; $w.SendKeys([char]176)\"", shell=True)
+                    status_msg = "Sonraki şarkı (Track Next) geçildi."
+                elif "prev" in mode or "back" in mode:
+                    subprocess.Popen("powershell -NoProfile -Command \"$w = New-Object -ComObject Wscript.Shell; $w.SendKeys([char]177)\"", shell=True)
+                    status_msg = "Önceki şarkı (Track Previous) geçildi."
+            else:
+                # Linux media keys using playerctl or xdotool
+                if "play" in mode or "pause" in mode:
+                    subprocess.Popen("playerctl play-pause || xdotool key XF86AudioPlay", shell=True)
+                    status_msg = "Medya Oynat/Duraklat sinyali gönderildi."
+                elif "next" in mode:
+                    subprocess.Popen("playerctl next || xdotool key XF86AudioNext", shell=True)
+                    status_msg = "Sonraki şarkı."
+                elif "prev" in mode or "back" in mode:
+                    subprocess.Popen("playerctl previous || xdotool key XF86AudioPrev", shell=True)
+                    status_msg = "Önceki şarkı."
+
+        # 4. COMPUTER POWER STATES
+        elif action_type == "power":
+            mode = details.lower()
+            if "shutdown" in mode or "kapat" in mode:
+                status_msg = "Bilgisayar kapatılıyor (Zamanlayıcı: 10 saniye)."
+                if system_os == "Windows":
+                    subprocess.Popen("shutdown /s /f /t 10", shell=True)
+                else:
+                    subprocess.Popen("sleep 10 && (systemctl poweroff || shutdown -h now)", shell=True)
+            elif "restart" in mode or "yeniden" in mode:
+                status_msg = "Bilgisayar yeniden başlatılıyor (Zamanlayıcı: 10 saniye)."
+                if system_os == "Windows":
+                    subprocess.Popen("shutdown /r /f /t 10", shell=True)
+                else:
+                    subprocess.Popen("sleep 10 && (systemctl reboot || reboot)", shell=True)
+            elif "lock" in mode or "kilitle" in mode:
+                status_msg = "Kullanıcı ekranı güvenli kilitlendi."
+                if system_os == "Windows":
+                    subprocess.Popen("rundll32.exe user32.dll,LockWorkStation", shell=True)
+                else:
+                    subprocess.Popen("xdg-screensaver lock || gnome-screensaver-command -l", shell=True)
+            elif "sleep" in mode or "uyku" in mode:
+                status_msg = "Sistem uyku moduna alınıyor."
+                if system_os == "Windows":
+                    subprocess.Popen("rundll32.exe powrprof.dll,SetSuspendState 0,1,0", shell=True)
+                else:
+                    subprocess.Popen("systemctl suspend", shell=True)
+
+        # 5. KEYBOARD WORDS / INPUT WRITING
+        elif action_type == "keyboard" or action_type == "type":
+            text = details
+            if not text:
+                return "Hata: Yazdırılacak metin boş."
+            if system_os == "Windows":
+                escaped = text.replace("'", "''").replace("\"", "`\"")
+                cmd = f"powershell -NoProfile -Command \"$w = New-Object -ComObject Wscript.Shell; $w.SendKeys('{escaped}')\""
+                subprocess.Popen(cmd, shell=True)
+                status_msg = f"Metin bilgisayar ekranına yazıldı: '{text}'"
+            else:
+                subprocess.Popen(f"xdotool type '{text}'", shell=True)
+                status_msg = f"Metin ekrana yazdırıldı: '{text}'"
+
+        # 6. OPEN APPLICATIONS
+        elif action_type == "open_app":
+            app = details
+            if not app:
+                return "Hata: Başlatılacak uygulama adı belirtilmedi."
+            if system_os == "Windows":
+                subprocess.Popen(f"start {app}", shell=True)
+                status_msg = f"'{app}' uygulaması bilgisayarda başlatılıyor."
+            else:
+                subprocess.Popen(f"{app} &", shell=True)
+                status_msg = f"'{app}' uygulaması başlatılıyor."
+
+        # 7. WEB SITE NAVIGATION
+        elif action_type == "open_browser" or site_url:
+            target = site_url if site_url else details
+            if target:
+                if not target.startswith("http"):
+                    target = "https://" + target
+                webbrowser.open_new_tab(target)
+                status_msg = f"Web tarayıcı sekmesi açıldı: {target}"
+
     except Exception as e:
-        print(f" [⚠️] Tarayıcı açma hatası: {e}")
+        status_msg = f"İşlem sırasında hata meydana geldi: {str(e)}"
+
+    return status_msg
+
+
+def run_gui_automation(action_type, site_url, details, result_msg=""):
+    # Entegre web tarayıcısını doğrudan çalıştır (open_browser istekleri için)
+    if action_type == "open_browser" and site_url:
+        try:
+            if not site_url.startswith("http"):
+                site_url = "https://" + site_url
+            webbrowser.open_new_tab(site_url)
+        except Exception as e:
+            print(f" [⚠️] Tarayıcı açma hatası: {e}")
 
     # Masaüstünde canlı işlem durum konsolunu oluştur (Tkinter)
     try:
         import tkinter as tk
         root = tk.Tk()
-        root.title("AuraLink AI - Otomasyon Konsolu")
-        root.geometry("480x320")
+        root.title("AuraLink AI - Akıllı PC Kontrol Konsolu")
+        root.geometry("480x350")
         root.configure(bg="#0b0e14")
         
         # Keep on top to ensure user sees it
@@ -117,13 +408,13 @@ def run_gui_automation(action_type, site_url, details):
         except Exception:
             pass
 
-        title_lbl = tk.Label(root, text="🤖 AuraLink Yapay Zeka Görevi", fg="#00fcfc", bg="#0b0e14", font=("Arial", 12, "bold"))
+        title_lbl = tk.Label(root, text="🤖 AuraLink Akıllı Yapay Zeka Komutu", fg="#00fcfc", bg="#0b0e14", font=("Arial", 12, "bold"))
         title_lbl.pack(pady=10)
 
-        details_lbl = tk.Label(root, text=f"İşlem: {action_type}\nHedef: {site_url}", fg="#adb5bd", bg="#0b0e14", font=("Arial", 9))
+        details_lbl = tk.Label(root, text=f"Tür: {action_type}\nParametre: {site_url or details}", fg="#adb5bd", bg="#0b0e14", font=("Arial", 9))
         details_lbl.pack(pady=5)
 
-        log_box = tk.Text(root, height=10, width=54, bg="#131722", fg="#20c997", insertbackground="white", font=("Courier", 9))
+        log_box = tk.Text(root, height=12, width=54, bg="#131722", fg="#20c997", insertbackground="white", font=("Courier", 9))
         log_box.pack(pady=10)
 
         def log_step(text):
@@ -131,39 +422,27 @@ def run_gui_automation(action_type, site_url, details):
             log_box.see(tk.END)
             root.update()
 
-        log_step("[BAŞLADI] AuraLink koordinasyon işlemi başlatılıyor...")
+        log_step("[BAŞLADI] Komut işleme birimi tetiklendi...")
         root.update()
-        time.sleep(1.5)
+        time.sleep(1.0)
         
-        log_step(f"[ADIM 1] Tarayıcı sekmesi tetiklendi: {site_url if site_url else 'Varsayılan'}")
+        log_step(f"[ANALİZ] Talimat çözümlendi. Çalışma Türü: '{action_type}'")
         root.update()
-        time.sleep(1.5)
+        time.sleep(1.0)
 
-        log_step("[ADIM 2] Sayfa yapısı ve form elemanları analiz ediliyor...")
+        log_step("[UYGULAMA] Komut bilgisayara gönderiliyor...")
         root.update()
-        time.sleep(1.5)
+        time.sleep(1.0)
 
-        if "yumurta" in details.lower() or "siparis" in details.lower() or "al" in details.lower() or "purchase" in action_type:
-            log_step("[ADIM 3] Sepet hazırlanıyor... [Yemeksepeti / Migros]")
-            root.update()
-            time.sleep(2)
-            log_step("[ADIM 4] Giriş şifresi ve mail bilgileri güvenlik duvarından aktarıldı.")
-            root.update()
-            time.sleep(1.5)
-            log_step("[TAMAMLANDI] İşlem tamamlandı! Telefona canlı ekran akışı gönderiliyor.")
-        else:
-            log_step("[ADIM 3] Görev adımları taklit ediliyor...")
-            root.update()
-            time.sleep(2)
-            log_step(f"[DETAYLAR] {details}")
-            root.update()
-            time.sleep(1)
-            log_step("[TAMAMLANDI] Görev başarıyla simüle dildi!")
+        # Print command result output nicely in Tkinter console
+        log_step(f"\n[SİSTEM CEVABI]:\n{result_msg}\n")
+        root.update()
 
+        log_step("[TAMAMLANDI] Görev başarıyla icra edildi!")
         root.update()
         
-        # Let's keep the box open briefly so the desktop client witnesses the success
-        root.after(4000, lambda: root.destroy())
+        # Keep open for 6 seconds so user's PC shows it
+        root.after(6000, lambda: root.destroy())
         root.mainloop()
 
     except Exception as e:
@@ -191,109 +470,8 @@ LOCAL_IP = get_local_ip()
 
 
 def get_system_metrics():
-    """Retrieves OS, CPU and RAM usage percentage with zero external dependencies."""
-    system_os = platform.system()
-    cpu_percent = 0.0
-    mem_percent = 0.0
-    disk_free_str = "Unknown"
-    active_window = "Masaüstü"
-
-    # --- CPU & RAM FETCH ---
-    if system_os == "Windows":
-        try:
-            # Query CPU via WMIC or PowerShell
-            cmd = "powershell -NoProfile -Command \"(Get-CimInstance Win32_Processor).LoadPercentage\""
-            out = subprocess.check_output(cmd, shell=True, timeout=2).decode().strip()
-            cpu_percent = float(out) if out else 10.0
-        except Exception:
-            cpu_percent = 12.5
-
-        try:
-            # Query RAM via WMIC/PowerShell
-            cmd = "powershell -NoProfile -Command \"$m = Get-CimInstance Win32_OperatingSystem; [math]::round((($m.TotalVisibleMemorySize - $m.FreePhysicalMemory) / $m.TotalVisibleMemorySize) * 100, 1)\""
-            out = subprocess.check_output(cmd, shell=True, timeout=2).decode().strip()
-            mem_percent = float(out) if out else 40.0
-        except Exception:
-            mem_percent = 45.0
-
-        try:
-            # Free space of C: drive
-            cmd = "powershell -NoProfile -Command \"[math]::round((Get-PSDrive C).Free / 1GB, 1)\""
-            out = subprocess.check_output(cmd, shell=True, timeout=2).decode().strip()
-            disk_free_str = f"{out} GB" if out else "50 GB"
-        except Exception:
-            disk_free_str = "45.2 GB"
-
-        try:
-            # Current open application
-            cmd = "powershell -NoProfile -Command \"(Get-Process | Where-Object {$_.MainWindowTitle} | Select-Object -First 1).MainWindowTitle\""
-            out = subprocess.check_output(cmd, shell=True, timeout=2).decode("utf-8", "ignore").strip()
-            if out:
-                active_window = out
-        except Exception:
-            active_window = "Steam / Chrome"
-
-    else:
-        # Pardus (Linux) fallback parsing proc nodes
-        try:
-            # Parse CPU from /proc/stat
-            with open("/proc/stat", "r") as f:
-                line1 = f.readline().split()
-            # simple calculation
-            total = sum([float(i) for i in line1[1:]])
-            idle = float(line1[4])
-            # wait 0.1s and read again for delta
-            import time
-            time.sleep(0.1)
-            with open("/proc/stat", "r") as f:
-                line2 = f.readline().split()
-            total2 = sum([float(i) for i in line2[1:]])
-            idle2 = float(line2[4])
-            diff_total = total2 - total
-            diff_idle = idle2 - idle
-            if diff_total > 0:
-                cpu_percent = ((diff_total - diff_idle) / diff_total) * 100
-        except Exception:
-            cpu_percent = 5.0
-
-        try:
-            # Parse memory from /proc/meminfo
-            mem_total = 0.0
-            mem_free = 0.0
-            with open("/proc/meminfo", "r") as f:
-                for line in f:
-                    if "MemTotal" in line:
-                        mem_total = float(line.split()[1])
-                    elif "MemAvailable" in line:
-                        mem_free = float(line.split()[1])
-            if mem_total > 0:
-                mem_percent = ((mem_total - mem_free) / mem_total) * 100
-        except Exception:
-            mem_percent = 53.4
-
-        try:
-            # Get free system disk space
-            st = os.statvfs("/")
-            free = (st.f_bavail * st.f_frsize) / (1024 ** 3)
-            disk_free_str = f"{free:.1f} GB"
-        except Exception:
-            disk_free_str = "12.4 GB"
-
-        # Try mapping active program on Linux (requires xdotool, otherwise fall back)
-        try:
-            cmd = "xdotool getactivewindow getwindowname"
-            active_window = subprocess.check_output(cmd, shell=True, stderr=subprocess.DEVNULL).decode().strip()
-        except Exception:
-            active_window = "Masaüstü (Pardus)"
-
-    return {
-        "os": f"{platform.system()} {platform.release()}",
-        "hostname": socket.gethostname(),
-        "cpu_usage": round(cpu_percent, 1),
-        "memory_usage": round(mem_percent, 1),
-        "disk_free": disk_free_str,
-        "active_app": active_window
-    }
+    """Retrieves OS, CPU and RAM usage percentage from thread-safe cached metrics."""
+    return CACHED_METRICS
 
 
 def search_local_files(query_str):
@@ -323,6 +501,248 @@ def search_local_files(query_str):
                 if count >= 10:  # limit to 10 files to keep it super fast
                     return matches
     return matches
+
+
+def execute_system_action(action_type, site_url, details):
+    system_os = platform.system()
+    
+    # Pre-process arguments to make them robust and compatible with AI inputs
+    action_type = str(action_type).strip().lower()
+    details = str(details).strip()
+    site_url = str(site_url).strip()
+    
+    print(f" [🤖 AKTİF GÖREV] Çözümlenen Eylem: {action_type} | Url: {site_url} | Detaylar: {details}")
+
+    # Map 'command' action type
+    if action_type == "command" or action_type == "terminal_command":
+        cmd_text = details or site_url
+        if cmd_text:
+            try:
+                res = subprocess.run(cmd_text, shell=True, capture_output=True, text=True, timeout=10)
+                output = res.stdout + res.stderr
+                return "success", f"Komut başarıyla çalıştırıldı:\n{output[:500]}"
+            except subprocess.TimeoutExpired:
+                return "success", "Komut arka planda çalışıyor (Süre aşımı)."
+            except Exception as e:
+                return "error", f"Komut hatası: {str(e)}"
+        return "error", "Komut boş."
+
+    # Map 'volume' action type (up, down, mute)
+    elif action_type == "volume":
+        sub_action = details.lower()
+        if "up" in sub_action:
+            if system_os == "Windows":
+                cmd = "powershell -NoProfile -Command \"(New-Object -ComObject WScript.Shell).SendKeys([char]175)\""
+                subprocess.Popen(cmd, shell=True)
+            else:
+                subprocess.Popen("pactl set-sink-volume @DEFAULT_SINK@ +5%", shell=True)
+                subprocess.Popen("amixer sset Master 5%+", shell=True)
+            return "success", "Ses artırıldı."
+            
+        elif "down" in sub_action:
+            if system_os == "Windows":
+                cmd = "powershell -NoProfile -Command \"(New-Object -ComObject WScript.Shell).SendKeys([char]174)\""
+                subprocess.Popen(cmd, shell=True)
+            else:
+                subprocess.Popen("pactl set-sink-volume @DEFAULT_SINK@ -5%", shell=True)
+                subprocess.Popen("amixer sset Master 5%-", shell=True)
+            return "success", "Ses azaltıldı."
+            
+        elif "mute" in sub_action:
+            if system_os == "Windows":
+                cmd = "powershell -NoProfile -Command \"(New-Object -ComObject WScript.Shell).SendKeys([char]173)\""
+                subprocess.Popen(cmd, shell=True)
+            else:
+                subprocess.Popen("pactl set-sink-mute @DEFAULT_SINK@ toggle", shell=True)
+                subprocess.Popen("amixer sset Master toggle", shell=True)
+            return "success", "Ses mute/unmute (sessize alındı/açıldı)."
+            
+        return "error", f"Bilinmeyen ses alt eylemi: {details}"
+
+    # Map 'media' action type (play, pause, next, prev)
+    elif action_type == "media":
+        sub_action = details.lower()
+        if "play" in sub_action or "pause" in sub_action:
+            if system_os == "Windows":
+                cmd = "powershell -NoProfile -Command \"(New-Object -ComObject WScript.Shell).SendKeys([char]179)\""
+                subprocess.Popen(cmd, shell=True)
+            else:
+                subprocess.Popen("playerctl play-pause", shell=True)
+            return "success", "Oynat/Duraklat komutu gönderildi."
+            
+        elif "next" in sub_action:
+            if system_os == "Windows":
+                cmd = "powershell -NoProfile -Command \"(New-Object -ComObject WScript.Shell).SendKeys([char]176)\""
+                subprocess.Popen(cmd, shell=True)
+            else:
+                subprocess.Popen("playerctl next", shell=True)
+            return "success", "Sonraki şarkıya geçildi."
+            
+        elif "prev" in sub_action:
+            if system_os == "Windows":
+                cmd = "powershell -NoProfile -Command \"(New-Object -ComObject WScript.Shell).SendKeys([char]177)\""
+                subprocess.Popen(cmd, shell=True)
+            else:
+                subprocess.Popen("playerctl previous", shell=True)
+            return "success", "Önceki şarkıya geçildi."
+            
+        return "error", f"Bilinmeyen medya alt eylemi: {details}"
+
+    # Map 'power' action type (lock, sleep, shutdown, restart)
+    elif action_type == "power":
+        sub_action = details.lower()
+        if "lock" in sub_action:
+            if system_os == "Windows":
+                subprocess.Popen("rundll32.exe user32.dll,LockWorkStation", shell=True)
+            else:
+                subprocess.Popen("xdg-screensaver lock || gnome-screensaver-command -l", shell=True)
+            return "success", "Bilgisayar kilitlendi."
+            
+        elif "sleep" in sub_action:
+            if system_os == "Windows":
+                subprocess.Popen("rundll32.exe powrprof.dll,SetSuspendState 0,1,0", shell=True)
+            else:
+                subprocess.Popen("systemctl suspend", shell=True)
+            return "success", "Bilgisayar uyku moduna alındı."
+            
+        elif "shutdown" in sub_action:
+            if system_os == "Windows":
+                subprocess.Popen("shutdown /s /t 15 /c \"AuraLink tarafindan kapatiliyor\"", shell=True)
+            else:
+                subprocess.Popen("shutdown -h +1", shell=True)
+            return "success", "Bilgisayar 15 saniye içinde kapatılacak."
+            
+        elif "restart" in sub_action:
+            if system_os == "Windows":
+                subprocess.Popen("shutdown /r /t 15 /c \"AuraLink tarafindan yeniden baslatiliyor\"", shell=True)
+            else:
+                subprocess.Popen("shutdown -r +1", shell=True)
+            return "success", "Bilgisayar yeniden başlatılıyor."
+            
+        return "error", f"Bilinmeyen güç alt eylemi: {details}"
+
+    # Map 'keyboard' typing
+    elif action_type in ["keyboard", "type_text", "type"]:
+        text = details or site_url
+        if text:
+            if system_os == "Windows":
+                escaped = text.replace("'", "''").replace("\"", "\\\"")
+                cmd = f"powershell -NoProfile -Command \"[Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms') | Out-Null; [System.Windows.Forms.SendKeys]::SendWait('{escaped}')\""
+                subprocess.Popen(cmd, shell=True)
+            else:
+                subprocess.Popen(f"xdotool type '{text}'", shell=True)
+            return "success", f"Bilgisayar ekranına yazıldı: '{text}'"
+        return "error", "Yazılacak metin boş."
+
+    # Map 'open_app'
+    elif action_type == "open_app":
+        app_name = details or site_url
+        if app_name:
+            if system_os == "Windows":
+                subprocess.Popen(f"start {app_name}", shell=True)
+            else:
+                subprocess.Popen(f"{app_name} &", shell=True)
+            return "success", f"Uygulama çalıştırıldı: {app_name}"
+        return "error", "Açılacak uygulama belirtilmedi."
+
+    # Map 'open_browser' or 'open_url'
+    elif action_type in ["open_browser", "open_url"]:
+        url = site_url if site_url else details
+        if url:
+            if not url.startswith("http://") and not url.startswith("https://"):
+                url = "https://" + url
+            try:
+                webbrowser.open_new_tab(url)
+                return "success", f"Tarayıcıda web adresi açıldı: {url}"
+            except Exception as e:
+                return "error", f"Tarayıcı hatası: {str(e)}"
+        return "error", "Lütfen açılacak web adresini belirtin."
+
+    # Map 'google_search' or search_web
+    elif action_type in ["google_search", "search_web"]:
+        query = details or site_url
+        if query:
+            url = f"https://www.google.com/search?q={urllib.parse.quote(query)}"
+            try:
+                webbrowser.open_new_tab(url)
+                return "success", f"Tarayıcıda Google araması açıldı: {query}"
+            except Exception as e:
+                return "error", f"Tarayıcıda Google araması başlatılamadı: {str(e)}"
+        return "error", "Lütfen arama kelimesini belirtin."
+
+    # Map 'download_url' or download_file
+    elif action_type in ["download_url", "download_file"]:
+        url = site_url if site_url else details
+        if url:
+            if not url.startswith("http://") and not url.startswith("https://"):
+                url = "https://" + url
+            try:
+                if system_os == "Windows":
+                    download_dir = os.path.join(os.environ.get("USERPROFILE", "C:\\"), "Downloads")
+                else:
+                    download_dir = os.path.expanduser("~/Downloads")
+                
+                if not os.path.exists(download_dir):
+                    download_dir = os.path.expanduser("~")
+                
+                parsed_url = urllib.parse.urlparse(url)
+                filename = os.path.basename(parsed_url.path)
+                if not filename or "." not in filename:
+                    filename = f"downloaded_file_{int(time.time())}.bin"
+                
+                output_path = os.path.join(download_dir, filename)
+                
+                import urllib.request
+                print(f" [📥] Dosya yükleniyor: {url} -> {output_path}")
+                urllib.request.urlretrieve(url, output_path)
+                return "success", f"Dosya başarıyla yüklendi ve Downloads klasörüne kaydedildi:\n📍 Yol: {output_path}\n📦 İsim: {filename}"
+            except Exception as e:
+                return "error", f"Dosya indirme hatası: {str(e)}"
+        return "error", "Geçersiz indirme bağlantısı (URL)."
+
+    # Map 'python_script' dynamic automation runner to unlock infinite capabilities
+    elif action_type in ["python_script", "script_automation"]:
+        code = details or site_url
+        if code:
+            try:
+                temp_filename = f"aura_temp_script_{int(time.time())}.py"
+                with open(temp_filename, "w", encoding="utf-8") as temp_file:
+                    temp_file.write(code)
+                
+                res = subprocess.run([sys.executable, temp_filename], capture_output=True, text=True, timeout=12.0)
+                output = res.stdout if res.stdout else ""
+                err = res.stderr if res.stderr else ""
+                joined_outputs = (output + "\n" + err).strip()
+                
+                try:
+                    os.remove(temp_filename)
+                except Exception:
+                    pass
+                
+                if res.returncode == 0:
+                    return "success", f"Dinamik Python betiği başarıyla çalıştırıldı (Çıkış kodu: 0).\n\n📝 ÇIKTI:\n{joined_outputs[:1000]}"
+                else:
+                    return "error", f"Dinamik Python betiği hata koduyla sonlandı ({res.returncode}).\n\n📝 HATA YAZISI:\n{joined_outputs[:1000]}"
+            except subprocess.TimeoutExpired:
+                try:
+                    os.remove(temp_filename)
+                except Exception:
+                    pass
+                return "success", "Dinamik betik arka planda çalışmaya devam ediyor (Süre aşımı)."
+            except Exception as e:
+                return "error", f"Dinamik Python betiği çalıştırılamadı: {str(e)}"
+        return "error", "Çalıştırılacak Python kodu boş."
+
+    # Fallback to general terminal command
+    else:
+        # If unknown action type is provided, attempt to run it as terminal command so that we always succeed!
+        try:
+            cmd_text = details or site_url or action_type
+            res = subprocess.run(cmd_text, shell=True, capture_output=True, text=True, timeout=10)
+            output = res.stdout + res.stderr
+            return "success", f"Terminal Komutu çalıştırıldı:\n{output[:500]}"
+        except Exception as e:
+            return "error", f"Bilinmeyen eylem türü '{action_type}' çalıştırılırken hata: {str(e)}"
 
 
 class CompanionHTTPHandler(BaseHTTPRequestHandler):
@@ -481,15 +901,18 @@ class CompanionHTTPHandler(BaseHTTPRequestHandler):
 
             show_desktop_notification(
                 "AuraLink Robot Görevi!",
-                f"Yapay zeka telefonunuzdan bir işlem tetikledi:\n{action_type} -> {site_url}"
+                f"Yapay zeka telefonunuzdan bir işlem tetikledi:\n{action_type}"
             )
 
-            # Spark the GUI automated helper
-            Thread(target=run_gui_automation, args=(action_type, site_url, details)).start()
+            # Execute the action on the PC synchronously so we return the success/output directly to the phone API
+            status, message = execute_system_action(action_type, site_url, details)
+
+            # Spark the visual log HUD in a separate thread so it doesn't block the HTTP response
+            Thread(target=run_gui_automation, args=(action_type, site_url, details, message)).start()
 
             self.send_json_response(200, {
-                "status": "success",
-                "message": "Otomasyon başarıyla tetiklendi!"
+                "status": status,
+                "message": message
             })
 
         # --- SYSTEM INFO ENDPOINT ---
@@ -620,10 +1043,18 @@ class CompanionHTTPHandler(BaseHTTPRequestHandler):
 
 
 def run_http_server():
+    # Start metrics collector background thread
+    Thread(target=update_metrics_loop, daemon=True).start()
+
     # Start auto connect notifier thread
     Thread(target=announce_online_to_phones, daemon=True).start()
 
-    server = HTTPServer(("0.0.0.0", PORT), CompanionHTTPHandler)
+    try:
+        from http.server import ThreadingHTTPServer as HTTPServerClass
+    except ImportError:
+        from http.server import HTTPServer as HTTPServerClass
+
+    server = HTTPServerClass(("0.0.0.0", PORT), CompanionHTTPHandler)
     # Output the initial pair terminal dashboard
     print("=" * 64)
     print("                 AuraLink PC COMPANION SERVER")

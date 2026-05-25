@@ -42,7 +42,7 @@ class FileExplorerViewModel(application: Application) : AndroidViewModel(applica
         _errorMessage.value = null
 
         viewModelScope.launch {
-            val url = "http://${device.ipAddress}:${device.port}/files"
+            val url = device.buildUrl("/files")
             try {
                 val response = withContext(Dispatchers.IO) {
                     CompanionClient.service.listFiles(url, targetPath, device.pinCode)

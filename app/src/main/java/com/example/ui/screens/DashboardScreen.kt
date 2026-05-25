@@ -67,7 +67,7 @@ fun DashboardScreen(
         currentDevice?.let { dev ->
             isRefreshing = true
             scope.launch {
-                val url = "http://${dev.ipAddress}:${dev.port}/info"
+                val url = dev.buildUrl("/info")
                 try {
                     val result = withContext(Dispatchers.IO) {
                         CompanionClient.service.getSystemInfo(url, dev.pinCode)
@@ -293,7 +293,7 @@ fun DashboardScreen(
 
                 if (isLiveOpen && currentDevice != null) {
                     val dev = currentDevice!!
-                    val liveUrl = "http://${dev.ipAddress}:${dev.port}/screenshot?pin=${dev.pinCode}&t=$liveTrigger"
+                    val liveUrl = dev.buildUrl("/screenshot?pin=${dev.pinCode}&t=$liveTrigger")
 
                     Dialog(onDismissRequest = { isLiveOpen = false }) {
                         Surface(
