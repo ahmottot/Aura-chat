@@ -50,6 +50,20 @@ fun ChatScreen(
     val scope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
 
+    val storedApiKey by chatViewModel.storedApiKey.collectAsState()
+    val isApiKeyUnset = storedApiKey.isBlank() && 
+        (com.example.BuildConfig.GEMINI_API_KEY.isBlank() || com.example.BuildConfig.GEMINI_API_KEY == "MY_GEMINI_API_KEY")
+
+    var showApiKeyDialog by remember { mutableStateOf(false) }
+    var apiKeyInput by remember { mutableStateOf("") }
+    val context = androidx.compose.ui.platform.LocalContext.current
+
+    LaunchedEffect(showApiKeyDialog) {
+        if (showApiKeyDialog) {
+            apiKeyInput = storedApiKey
+        }
+    }
+
     // Zoom Image Dialog overlay state
     var zoomedImagePath by remember { mutableStateOf<String?>(null) }
 
@@ -85,6 +99,13 @@ fun ChatScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = { showApiKeyDialog = true }) {
+                        Icon(
+                            imageVector = Icons.Filled.VpnKey,
+                            contentDescription = "API Ayarı",
+                            tint = if (isApiKeyUnset) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                        )
+                    }
                     if (messages.isNotEmpty()) {
                         IconButton(onClick = { chatViewModel.clearChatHistory() }) {
                             Icon(Icons.Filled.DeleteSweep, "Geçmişi Temizle", tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -100,6 +121,56 @@ fun ChatScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
+            AnimatedVisibility(visible = isApiKeyUnset) {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.9f)
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp)
+                        .border(1.dp, MaterialTheme.colorScheme.error, RoundedCornerShape(12.dp)),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Warning,
+                            contentDescription = "Uyarı",
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(28.dp)
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "Gemini API Anahtarı Eksik",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp,
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                "Yapay zekanın telefonda çalışması için geçerli bir anahtar girin.",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.8f)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Button(
+                            onClick = { showApiKeyDialog = true },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.error
+                            ),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text("Anahtar Tanımla", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                        }
+                    }
+                }
+            }
             // Main messages area
             if (messages.isEmpty()) {
                 Box(
@@ -278,6 +349,80 @@ fun ChatScreen(
                 }
             }
         }
+    }
+
+    if (showApiKeyDialog) {
+        AlertDialog(
+            onDismissRequest = { showApiKeyDialog = false },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Filled.VpnKey,
+                        contentDescription = null,
+                        tint = NeonCyan,
+                        modifier = Modifier.padding(end = 8.dp)
+                    )
+                    Text("Gemini API Anahtarı", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        "Uygulamadaki yapay zekayı (Aura Asistan) kullanabilmek için geçerli bir Gemini API Anahtarı girmeniz gereklidir.",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        "Anahtarınız yerel olarak şifreli kaydedilir ve doğrudan Google API'sine bağlanmak için kullanılır.",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    OutlinedTextField(
+                        value = apiKeyInput,
+                        onValueChange = { apiKeyInput = it },
+                        label = { Text("API Anahtarı (AI_...)") },
+                        placeholder = { Text("AIzaSy...") },
+                        modifier = Modifier.fillMaxWidth().testTag("api_key_field"),
+                        singleLine = true,
+                        trailingIcon = {
+                            if (apiKeyInput.isNotEmpty()) {
+                                IconButton(onClick = { apiKeyInput = "" }) {
+                                    Icon(Icons.Filled.Clear, "Temizle")
+                                }
+                            }
+                        }
+                    )
+                    TextButton(
+                        onClick = {
+                            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://aistudio.google.com/app/apikey"))
+                            intent.flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK
+                            context.startActivity(intent)
+                        },
+                        modifier = Modifier.align(Alignment.Start)
+                    ) {
+                        Icon(Icons.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Ücretsiz Gemini API Anahtarı Al", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        chatViewModel.saveGeminiApiKey(apiKeyInput)
+                        showApiKeyDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                ) {
+                    Text("Kaydet")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showApiKeyDialog = false }) {
+                    Text("Vazgeç")
+                }
+            }
+        )
     }
 }
 

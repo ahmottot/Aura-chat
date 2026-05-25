@@ -39,6 +39,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _errorFlow = MutableStateFlow<String?>(null)
     val errorFlow: StateFlow<String?> = _errorFlow.asStateFlow()
 
+    private val _storedApiKey = MutableStateFlow("")
+    val storedApiKey: StateFlow<String> = _storedApiKey.asStateFlow()
+
     init {
         val database = AppDatabase.getDatabase(application)
         repository = DeviceRepository(database.deviceDao())
@@ -48,6 +51,24 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             started = SharingStarted.WhileSubscribed(5000),
             initialValue = emptyList()
         )
+
+        // Load saved API Key from preferences
+        _storedApiKey.value = context.getSharedPreferences("aura_link_prefs", Context.MODE_PRIVATE)
+            .getString("gemini_api_key", "") ?: ""
+    }
+
+    fun saveGeminiApiKey(key: String) {
+        context.getSharedPreferences("aura_link_prefs", Context.MODE_PRIVATE)
+            .edit()
+            .putString("gemini_api_key", key.trim())
+            .apply()
+        _storedApiKey.value = key.trim()
+    }
+
+    fun getEffectiveApiKey(): String {
+        val savedKey = _storedApiKey.value
+        if (savedKey.isNotBlank()) return savedKey
+        return BuildConfig.GEMINI_API_KEY
     }
 
     fun sendMessage(text: String, currentDevice: PairedDevice?) {
@@ -77,12 +98,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun processGeminiAI(userPrompt: String, device: PairedDevice?) {
-        val apiKey = BuildConfig.GEMINI_API_KEY
+        val apiKey = getEffectiveApiKey()
         if (apiKey.isBlank() || apiKey == "MY_GEMINI_API_KEY") {
             repository.addMessage(
                 ChatMessage(
                     sender = "SYSTEM",
-                    content = "Google AI Studio Secrets panelinden 'GEMINI_API_KEY' nizi girmeniz gerekmektedir."
+                    content = "Google AI Studio'daki Secrets panelinden veya telefondaki Ayarlar/Giriş ekranından 'GEMINI_API_KEY' nizi tanımlayınız."
                 )
             )
             return

@@ -100,6 +100,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 ?: devices.firstOrNull { it.ipAddress == ip && it.pinCode == pin }
 
             if (matchedDevice != null) {
+                // If we are already connected to this device and it is online, do not re-trigger alerts
+                val current = currentDevice.value
+                if (current != null && current.id == matchedDevice.id && _isDeviceOnline.value) {
+                    return@launch
+                }
+
                 val updatedDevice = matchedDevice.copy(ipAddress = ip, port = port)
                 repository.connectDevice(updatedDevice)
                 _isDeviceOnline.value = true
@@ -113,6 +119,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } else {
                 val existingDevice = devices.firstOrNull()
                 if (existingDevice != null && existingDevice.pinCode == pin) {
+                    // Ignore if already connected and online
+                    val current = currentDevice.value
+                    if (current != null && current.id == existingDevice.id && _isDeviceOnline.value) {
+                        return@launch
+                    }
+
                     val updatedDevice = existingDevice.copy(ipAddress = ip, port = port)
                     repository.connectDevice(updatedDevice)
                     _isDeviceOnline.value = true
